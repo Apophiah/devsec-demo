@@ -1,33 +1,60 @@
-name: Security feature task
-description: Create a student assignment to implement a web security feature
-title: "[Security Feature Task]: "
+name: UAS Django app task
+description: Create a student assignment to build a complete Django app for the UAS project
+title: "[UAS Django App Task]: "
 body:
   - type: markdown
     attributes:
       value: |
-        Use this template to assign students a feature task related to web security.
+        Use this template to assign a student a complete UAS Django app project.
   - type: textarea
     id: objective
     attributes:
       label: Learning objective
       description: Describe what students should learn by completing this task.
-      placeholder: Practice designing and implementing a secure feature in the Django app.
+      placeholder: Practice planning, building, documenting, and validating a complete Django app using production-style conventions.
     validations:
       required: true
   - type: textarea
-    id: security-goal
+    id: student-name
     attributes:
-      label: Security goal
-      description: Describe the security capability or protection the feature should provide.
-      placeholder: Add rate limiting, stronger input validation, audit logging, or similar.
+      label: Student identity and app name
+      description: State the student name and the Django app name that must be derived from it.
+      placeholder: Student name: Jane Doe. Required app name: janedoe or jane_doe.
     validations:
       required: true
   - type: textarea
     id: requested-feature
     attributes:
       label: Requested implementation
-      description: Describe the feature students should build.
-      placeholder: Explain the expected behavior, user flow, and any important constraints.
+      description: Describe the complete app students should build, including purpose, users, and major workflows.
+      placeholder: Build a complete UAS Django app with models, views, URLs, templates, forms, admin registration, and any supporting business logic needed for the selected domain.
+    validations:
+      required: true
+  - type: textarea
+    id: required-deliverables
+    attributes:
+      label: Required deliverables
+      description: List the artifacts and capabilities that must be included in the submission.
+      placeholder: |
+        - Django app named after the student
+        - Clean URL structure and view organization
+        - Models, forms, templates, and admin integration
+        - Input validation and error handling
+        - Tests and setup instructions
+        - Documentation of design decisions
+    validations:
+      required: true
+  - type: textarea
+    id: engineering-standards
+    attributes:
+      label: Best practices and industry standards
+      description: Describe the technical and quality expectations students must follow.
+      placeholder: |
+        - Follow Django conventions and separation of concerns
+        - Use secure defaults, validation, and CSRF protection
+        - Keep code modular, readable, and maintainable
+        - Reuse settings and patterns already present in the repository
+        - Write tests for the core behavior
     validations:
       required: true
   - type: textarea
@@ -36,22 +63,25 @@ body:
       label: Acceptance criteria
       description: List the requirements that define a complete solution.
       placeholder: |
-        - The feature mitigates the targeted risk
-        - The implementation is documented in the pull request
-        - Existing behavior still works
+        - The submitted Django app uses the student's name as the app name
+        - The app is complete, functional, and aligned with the requested domain
+        - Code follows Django best practices and industry-standard structure
+        - Core flows are validated with tests
+        - Existing repository behavior still works
+        - The pull request clearly documents the implementation
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
       label: Scope and hints
-      description: Share relevant files, routes, components, or design constraints.
+      description: Share relevant repository paths, suggested patterns, feature boundaries, or design constraints.
     validations:
       required: false
   - type: textarea
     id: additional-context
     attributes:
       label: Additional context
-      description: Add references, examples, mockups, or classroom notes.
+      description: Add references, grading notes, examples, mockups, or classroom instructions.
     validations:
       required: false
