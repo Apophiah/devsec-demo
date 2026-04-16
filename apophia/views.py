@@ -1,4 +1,5 @@
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
+from django.core.exceptions import PermissionDenied
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required, user_passes_test
@@ -23,8 +24,22 @@ def register(request):
     return render(request, 'apophia/register.html', {'form': form})
 
 @login_required
-def profile(request):
+def profile(request, username=None):
+    # Determine target user: either current user or one specified in URL
+    if username:
+        target_user = get_object_or_404(User, username=username)
+    else:
+        target_user = request.user
+
+    # RBAC/IDOR Check: Only self or staff can access
+    if target_user != request.user and not request.user.is_staff:
+        raise PermissionDenied("You do not have permission to access another user's profile.")
+
     if request.method == 'POST':
+        # Safety Check: Even staff cannot modify another's credentials/details here
+        if target_user != request.user:
+            raise PermissionDenied("You cannot modify another user's profile information.")
+
         u_form = UserUpdateForm(request.POST, instance=request.user)
         p_form = ProfileUpdateForm(request.POST, request.FILES, instance=request.user.profile)
         
@@ -34,12 +49,13 @@ def profile(request):
             messages.success(request, 'Your account has been updated!')
             return redirect('profile')
     else:
-        u_form = UserUpdateForm(instance=request.user)
-        p_form = ProfileUpdateForm(instance=request.user.profile)
+        u_form = UserUpdateForm(instance=target_user)
+        p_form = ProfileUpdateForm(instance=target_user.profile)
 
     context = {
         'u_form': u_form,
-        'p_form': p_form
+        'p_form': p_form,
+        'target_user': target_user
     }
     return render(request, 'apophia/profile.html', context)
 
