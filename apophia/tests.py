@@ -142,3 +142,30 @@ class IDORAccessTests(TestCase):
         # Verify user1 was NOT updated
         self.user1.refresh_from_db()
         self.assertNotEqual(self.user1.first_name, 'Hacker')
+
+class PasswordResetTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(username='resetuser', email='reset@example.com', password='Password123!')
+        self.reset_url = reverse('password_reset')
+        self.reset_done_url = reverse('password_reset_done')
+
+    def test_password_reset_request_view(self):
+        response = self.client.get(self.reset_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'apophia/password_reset_form.html')
+
+    def test_password_reset_submission_success(self):
+        # Submitting an existing email
+        response = self.client.post(self.reset_url, {'email': 'reset@example.com'})
+        self.assertRedirects(response, self.reset_done_url)
+        
+        # Submitting a non-existent email (Anti-Enumeration check)
+        response = self.client.post(self.reset_url, {'email': 'nonexistent@example.com'})
+        self.assertRedirects(response, self.reset_done_url) # Should redirect same way
+
+    def test_password_reset_confirm_invalid_token(self):
+        confirm_url = reverse('password_reset_confirm', kwargs={'uidb64': 'invalid', 'token': 'invalid'})
+        response = self.client.get(confirm_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Invalid Reset Link')

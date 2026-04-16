@@ -3,7 +3,10 @@ from django.core.exceptions import PermissionDenied
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required, user_passes_test
-from django.contrib.auth.views import LoginView, LogoutView, PasswordChangeView, PasswordChangeDoneView
+from django.contrib.auth.views import (
+    LoginView, LogoutView, PasswordChangeView, PasswordChangeDoneView,
+    PasswordResetView, PasswordResetDoneView, PasswordResetConfirmView, PasswordResetCompleteView
+)
 from django.contrib import messages
 from django.urls import reverse_lazy
 
@@ -81,3 +84,18 @@ def dashboard(request):
 def staff_directory(request):
     users = User.objects.all().order_by('-date_joined')
     return render(request, 'apophia/staff_directory.html', {'users': users})
+
+class ApophiaPasswordResetView(PasswordResetView):
+    template_name = 'apophia/password_reset_form.html'
+    email_template_name = 'apophia/password_reset_email.html'
+    success_url = reverse_lazy('password_reset_done')
+
+class ApophiaPasswordResetDoneView(PasswordResetDoneView):
+    template_name = 'apophia/password_reset_done.html'
+
+class ApophiaPasswordResetConfirmView(PasswordResetConfirmView):
+    template_name = 'apophia/password_reset_confirm.html'
+    success_url = reverse_lazy('password_reset_complete')
+
+class ApophiaPasswordResetCompleteView(PasswordResetCompleteView):
+    template_name = 'apophia/password_reset_complete.html'
