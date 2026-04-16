@@ -71,3 +71,32 @@ class UASAuthTests(TestCase):
         user.refresh_from_db()
         self.assertEqual(user.first_name, 'John')
         self.assertEqual(user.profile.location, 'Test City')
+
+class RBACAccessTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.staff_user = User.objects.create_user(username='staffadmin', password='Password123!', is_staff=True)
+        self.regular_user = User.objects.create_user(username='regularuser', password='Password123!', is_staff=False)
+        self.staff_dir_url = reverse('staff_directory')
+        self.login_url = reverse('login')
+
+    def test_anonymous_access_staff_directory(self):
+        # Anonymous users should be redirected to login
+        response = self.client.get(self.staff_dir_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(self.login_url, response.url)
+
+    def test_regular_user_access_staff_directory(self):
+        # Authenticated non-staff users should be denied (redirected to login or shown 302 by user_passes_test)
+        self.client.login(username='regularuser', password='Password123!')
+        response = self.client.get(self.staff_dir_url)
+        self.assertEqual(response.status_code, 302) # user_passes_test redirects by default
+
+    def test_staff_user_access_staff_directory(self):
+        # Staff users should have access
+        self.client.login(username='staffadmin', password='Password123!')
+        response = self.client.get(self.staff_dir_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'apophia/staff_directory.html')
+        self.assertContains(response, 'regularuser')
+        self.assertContains(response, 'staffadmin')

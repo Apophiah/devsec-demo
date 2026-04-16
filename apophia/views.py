@@ -1,6 +1,7 @@
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout, authenticate
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
+from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth.views import LoginView, LogoutView, PasswordChangeView, PasswordChangeDoneView
 from django.contrib import messages
 from django.urls import reverse_lazy
@@ -59,3 +60,8 @@ class ApophiaPasswordChangeDoneView(PasswordChangeDoneView):
 @login_required
 def dashboard(request):
     return render(request, 'apophia/dashboard.html')
+
+@user_passes_test(lambda u: u.is_staff)
+def staff_directory(request):
+    users = User.objects.all().order_by('-date_joined')
+    return render(request, 'apophia/staff_directory.html', {'users': users})

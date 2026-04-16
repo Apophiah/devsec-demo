@@ -9,4 +9,5 @@ urlpatterns = [
     path('dashboard/', views.dashboard, name='dashboard'),
     path('password-change/', views.ApophiaPasswordChangeView.as_view(), name='password_change'),
     path('password-change/done/', views.ApophiaPasswordChangeDoneView.as_view(), name='password_change_done'),
+    path('staff-directory/', views.staff_directory, name='staff_directory'),
 ]
