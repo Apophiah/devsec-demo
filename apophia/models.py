@@ -25,3 +25,11 @@ def save_user_profile(sender, instance, **kwargs):
         instance.profile.save()
     else:
         Profile.objects.get_or_create(user=instance)
+
+class LoginAttempt(models.Model):
+    username = models.CharField(max_length=255)
+    ip_address = models.GenericIPAddressField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Failed attempt for {self.username} from {self.ip_address} at {self.timestamp}"

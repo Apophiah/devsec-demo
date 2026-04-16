@@ -169,3 +169,39 @@ class PasswordResetTests(TestCase):
         response = self.client.get(confirm_url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Invalid Reset Link')
+
+class BruteForceTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(username='victim', password='Password123!')
+        self.login_url = reverse('login')
+
+    def test_brute_force_lockout(self):
+        # Attempt login 5 times with wrong password
+        for _ in range(5):
+            response = self.client.post(self.login_url, {
+                'username': 'victim',
+                'password': 'wrongpassword'
+            }, follow=True)
+            self.assertContains(response, 'Please enter a correct username and password')
+
+        # 6th attempt should be locked out
+        response = self.client.post(self.login_url, {
+            'username': 'victim',
+            'password': 'Password123!' # Correct password this time
+        }, follow=True)
+        self.assertContains(response, 'Too many failed login attempts')
+        self.assertFalse(response.context['user'].is_authenticated)
+
+    def test_lockout_separation_by_username(self):
+        # Fail 5 times for 'userA'
+        for _ in range(5):
+            self.client.post(self.login_url, {'username': 'userA', 'password': 'wrong'})
+        
+        # 'userB' should still be able to log in from the same IP (simplified test logic)
+        User.objects.create_user(username='userB', password='Password123!')
+        response = self.client.post(self.login_url, {
+            'username': 'userB',
+            'password': 'Password123!'
+        }, follow=True)
+        self.assertTrue(response.context['user'].is_authenticated)

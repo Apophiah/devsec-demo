@@ -7,9 +7,11 @@ from django.contrib.auth.views import (
     LoginView, LogoutView, PasswordChangeView, PasswordChangeDoneView,
     PasswordResetView, PasswordResetDoneView, PasswordResetConfirmView, PasswordResetCompleteView
 )
-from django.contrib import messages
 from django.urls import reverse_lazy
+from django.utils import timezone
+from datetime import timedelta
 
+from .models import LoginAttempt
 from .forms import ApophiaUserCreationForm, UserUpdateForm, ProfileUpdateForm
 
 def register(request):
@@ -65,6 +67,39 @@ def profile(request, username=None):
 class ApophiaLoginView(LoginView):
     template_name = 'apophia/login.html'
     redirect_authenticated_user = True
+
+    def get_client_ip(self):
+        x_forwarded_for = self.request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = self.request.META.get('REMOTE_ADDR')
+        return ip
+
+    def post(self, request, *args, **kwargs):
+        username = request.POST.get('username')
+        ip_address = self.get_client_ip()
+        
+        # Check for lockout (5 failures in the last 15 minutes)
+        fifteen_mins_ago = timezone.now() - timedelta(minutes=15)
+        failures = LoginAttempt.objects.filter(
+            username=username,
+            ip_address=ip_address,
+            timestamp__gte=fifteen_mins_ago
+        ).count()
+
+        if failures >= 5:
+            messages.error(request, 'Too many failed login attempts. Your account is temporarily locked. Please try again in 15 minutes.')
+            return render(request, self.template_name, self.get_context_data())
+
+        return super().post(request, *args, **kwargs)
+
+    def form_invalid(self, form):
+        # Log the failed attempt
+        username = self.request.POST.get('username')
+        ip_address = self.get_client_ip()
+        LoginAttempt.objects.create(username=username, ip_address=ip_address)
+        return super().form_invalid(form)
 
 class ApophiaLogoutView(LogoutView):
     template_name = 'apophia/logout.html'
