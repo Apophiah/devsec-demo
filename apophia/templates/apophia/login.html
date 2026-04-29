@@ -23,6 +23,9 @@
             <button type="submit" class="btn">Sign In</button>
         </form>
         <div style="margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-muted);">
+            <a href="{% url 'password_reset' %}" style="color: var(--text-muted); text-decoration: none;">Forgot Password?</a>
+        </div>
+        <div style="margin-top: 0.5rem; text-align: center; font-size: 0.875rem; color: var(--text-muted);">
             Don't have an account? <a href="{% url 'register' %}" style="color: var(--primary-color);">Create one</a>
         </div>
     </div>
