@@ -8,6 +8,11 @@
         <h1 style="text-align: center; margin-bottom: 2rem;">Welcome Back</h1>
         <form method="post">
             {% csrf_token %}
+            {% if form.non_field_errors %}
+                {% for error in form.non_field_errors %}
+                    <div class="message error">{{ error }}</div>
+                {% endfor %}
+            {% endif %}
             {% for field in form %}
                 <div class="form-group">
                     <label for="{{ field.id_for_label }}">{{ field.label }}</label>

@@ -3,6 +3,140 @@ from django.urls import reverse
 from django.contrib.auth.models import User
 from .models import Profile
 
+
+class CSRFProtectionTests(TestCase):
+    """Verifies that all state-changing endpoints enforce CSRF protection."""
+
+    def setUp(self):
+        self.client = Client(enforce_csrf_checks=True)
+        self.user = User.objects.create_user(
+            username='csrfuser', email='csrf@example.com', password='Password123!'
+        )
+
+    def _get_csrf_token(self, url):
+        """GET a page to receive the CSRF cookie, then return the token value."""
+        self.client.get(url)
+        return self.client.cookies['csrftoken'].value
+
+    # ------------------------------------------------------------------ #
+    # Register
+    # ------------------------------------------------------------------ #
+
+    def test_register_post_without_csrf_returns_403(self):
+        response = self.client.post(reverse('register'), {
+            'username': 'newuser', 'email': 'new@example.com',
+            'password1': 'Password123!', 'password2': 'Password123!',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_register_post_with_csrf_succeeds(self):
+        token = self._get_csrf_token(reverse('register'))
+        response = self.client.post(reverse('register'), {
+            'username': 'newuser', 'email': 'new@example.com',
+            'password1': 'Password123!', 'password2': 'Password123!',
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Login
+    # ------------------------------------------------------------------ #
+
+    def test_login_post_without_csrf_returns_403(self):
+        response = self.client.post(reverse('login'), {
+            'username': 'csrfuser', 'password': 'Password123!',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_login_post_with_csrf_succeeds(self):
+        token = self._get_csrf_token(reverse('login'))
+        response = self.client.post(reverse('login'), {
+            'username': 'csrfuser', 'password': 'Password123!',
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Logout
+    # ------------------------------------------------------------------ #
+
+    def test_logout_post_without_csrf_returns_403(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('logout'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_logout_post_with_csrf_succeeds(self):
+        self.client.force_login(self.user)
+        token = self._get_csrf_token(reverse('dashboard'))
+        response = self.client.post(reverse('logout'), {
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Profile update
+    # ------------------------------------------------------------------ #
+
+    def test_profile_post_without_csrf_returns_403(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('profile'), {
+            'first_name': 'Jane', 'last_name': 'Doe',
+            'email': 'jane@example.com',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_profile_post_with_csrf_succeeds(self):
+        self.client.force_login(self.user)
+        token = self._get_csrf_token(reverse('profile'))
+        response = self.client.post(reverse('profile'), {
+            'first_name': 'Jane', 'last_name': 'Doe',
+            'email': 'jane@example.com',
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Password change
+    # ------------------------------------------------------------------ #
+
+    def test_password_change_post_without_csrf_returns_403(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'Password123!',
+            'new_password1': 'NewPass456!',
+            'new_password2': 'NewPass456!',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_password_change_post_with_csrf_succeeds(self):
+        self.client.force_login(self.user)
+        token = self._get_csrf_token(reverse('password_change'))
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'Password123!',
+            'new_password1': 'NewPass456!',
+            'new_password2': 'NewPass456!',
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
+    # ------------------------------------------------------------------ #
+    # Password reset request
+    # ------------------------------------------------------------------ #
+
+    def test_password_reset_post_without_csrf_returns_403(self):
+        response = self.client.post(reverse('password_reset'), {
+            'email': 'csrf@example.com',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_password_reset_post_with_csrf_succeeds(self):
+        token = self._get_csrf_token(reverse('password_reset'))
+        response = self.client.post(reverse('password_reset'), {
+            'email': 'csrf@example.com',
+            'csrfmiddlewaretoken': token,
+        })
+        self.assertNotEqual(response.status_code, 403)
+
 class UASAuthTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -42,9 +176,9 @@ class UASAuthTests(TestCase):
             'username': 'testuser',
             'password': 'Password123!'
         })
-        self.assertRedirects(response, self.profile_url)
+        self.assertRedirects(response, self.dashboard_url)
 
-        response = self.client.post(self.logout_url) 
+        response = self.client.post(self.logout_url)
         self.assertEqual(response.status_code, 302)
 
     def test_protected_areas(self):
@@ -205,3 +339,67 @@ class BruteForceTests(TestCase):
             'password': 'Password123!'
         }, follow=True)
         self.assertTrue(response.context['user'].is_authenticated)
+
+
+class SecurityHeadersTests(TestCase):
+    """Verifies that every response carries the required security headers."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(username='headeruser', password='Password123!')
+
+    def _get(self, url):
+        return self.client.get(url)
+
+    def _assert_headers(self, response):
+        # Content-Security-Policy
+        csp = response.get('Content-Security-Policy', '')
+        self.assertIn("default-src 'self'", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertIn("form-action 'self'", csp)
+        self.assertIn("base-uri 'self'", csp)
+
+        # X-Content-Type-Options
+        self.assertEqual(response.get('X-Content-Type-Options'), 'nosniff')
+
+        # X-Frame-Options
+        self.assertEqual(response.get('X-Frame-Options'), 'DENY')
+
+        # Referrer-Policy
+        self.assertEqual(
+            response.get('Referrer-Policy'),
+            'strict-origin-when-cross-origin',
+        )
+
+        # Cross-Origin-Opener-Policy
+        self.assertEqual(
+            response.get('Cross-Origin-Opener-Policy'),
+            'same-origin',
+        )
+
+    def test_headers_on_public_page(self):
+        self._assert_headers(self._get(reverse('login')))
+
+    def test_headers_on_authenticated_page(self):
+        self.client.login(username='headeruser', password='Password123!')
+        self._assert_headers(self._get(reverse('dashboard')))
+
+    def test_headers_on_register_page(self):
+        self._assert_headers(self._get(reverse('register')))
+
+    def test_session_cookie_is_httponly(self):
+        # Capture the response directly — self.client.cookies re-parses Set-Cookie
+        # headers and loses the HttpOnly flag; response.cookies preserves it.
+        response = self.client.post(reverse('login'), {
+            'username': 'headeruser', 'password': 'Password123!'
+        })
+        session_cookie = response.cookies.get('sessionid')
+        self.assertIsNotNone(session_cookie)
+        self.assertIn('HttpOnly', session_cookie.output())
+
+    def test_csrf_cookie_is_httponly(self):
+        response = self.client.get(reverse('login'))
+        csrf_cookie = response.cookies.get('csrftoken')
+        self.assertIsNotNone(csrf_cookie)
+        self.assertIn('HttpOnly', csrf_cookie.output())
