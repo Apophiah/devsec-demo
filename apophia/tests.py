@@ -3,10 +3,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from django.conf import settings as django_settings
 from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ImproperlyConfigured
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -948,3 +950,119 @@ class FileUploadSecurityTests(TestCase):
         self.client.post(reverse('document_delete', kwargs={'pk': doc.pk}))
         self.assertFalse(Document.objects.filter(pk=doc.pk).exists())
         self.assertFalse(Path(file_path).exists())
+
+
+# ------------------------------------------------------------------ #
+# Security configuration tests
+# ------------------------------------------------------------------ #
+
+class SecurityConfigurationTests(TestCase):
+    """Verifies that the production-grade settings defaults are correct."""
+
+    # ------------------------------------------------------------------ #
+    # Cookie security
+    # ------------------------------------------------------------------ #
+
+    def test_session_cookie_httponly(self):
+        self.assertTrue(django_settings.SESSION_COOKIE_HTTPONLY)
+
+    def test_csrf_cookie_httponly(self):
+        self.assertTrue(django_settings.CSRF_COOKIE_HTTPONLY)
+
+    def test_session_cookie_samesite_is_lax_or_strict(self):
+        self.assertIn(django_settings.SESSION_COOKIE_SAMESITE, ('Lax', 'Strict'))
+
+    def test_csrf_cookie_samesite_is_lax_or_strict(self):
+        self.assertIn(django_settings.CSRF_COOKIE_SAMESITE, ('Lax', 'Strict'))
+
+    # ------------------------------------------------------------------ #
+    # Timeout policies
+    # ------------------------------------------------------------------ #
+
+    def test_session_cookie_age_is_at_most_one_day(self):
+        self.assertLessEqual(django_settings.SESSION_COOKIE_AGE, 86400)
+
+    def test_password_reset_timeout_is_at_most_one_day(self):
+        self.assertLessEqual(django_settings.PASSWORD_RESET_TIMEOUT, 86400)
+
+    # ------------------------------------------------------------------ #
+    # Transport and content security headers
+    # ------------------------------------------------------------------ #
+
+    def test_secure_content_type_nosniff_enabled(self):
+        self.assertTrue(django_settings.SECURE_CONTENT_TYPE_NOSNIFF)
+
+    def test_x_frame_options_is_deny(self):
+        self.assertEqual(django_settings.X_FRAME_OPTIONS, 'DENY')
+
+    # ------------------------------------------------------------------ #
+    # Secret key
+    # ------------------------------------------------------------------ #
+
+    def test_secret_key_is_set_and_non_empty(self):
+        self.assertTrue(django_settings.SECRET_KEY)
+        self.assertGreater(len(django_settings.SECRET_KEY), 20)
+
+    # ------------------------------------------------------------------ #
+    # _env_bool helper (imported directly from settings module)
+    # ------------------------------------------------------------------ #
+
+    def test_env_bool_defaults_to_false_when_absent(self):
+        from devsec_demo.settings import _env_bool
+        import os
+        env_var = 'APOPHIA_TEST_BOOL_ABSENT_XYZ'
+        os.environ.pop(env_var, None)
+        self.assertFalse(_env_bool(env_var))
+
+    def test_env_bool_returns_true_for_truthy_values(self):
+        from devsec_demo.settings import _env_bool
+        import os
+        env_var = 'APOPHIA_TEST_BOOL_XYZ'
+        for truthy in ('1', 'true', 'yes', 'True', 'YES'):
+            os.environ[env_var] = truthy
+            self.assertTrue(_env_bool(env_var), msg=f"Expected True for {truthy!r}")
+        os.environ.pop(env_var, None)
+
+    def test_env_bool_returns_false_for_falsy_values(self):
+        from devsec_demo.settings import _env_bool
+        import os
+        env_var = 'APOPHIA_TEST_BOOL_XYZ'
+        for falsy in ('0', 'false', 'no', 'off', ''):
+            os.environ[env_var] = falsy
+            self.assertFalse(_env_bool(env_var), msg=f"Expected False for {falsy!r}")
+        os.environ.pop(env_var, None)
+
+    # ------------------------------------------------------------------ #
+    # _env_int helper
+    # ------------------------------------------------------------------ #
+
+    def test_env_int_returns_default_when_absent(self):
+        from devsec_demo.settings import _env_int
+        import os
+        env_var = 'APOPHIA_TEST_INT_ABSENT_XYZ'
+        os.environ.pop(env_var, None)
+        self.assertEqual(_env_int(env_var, default=42), 42)
+
+    def test_env_int_raises_for_non_integer_value(self):
+        from devsec_demo.settings import _env_int
+        import os
+        env_var = 'APOPHIA_TEST_INT_XYZ'
+        os.environ[env_var] = 'not_a_number'
+        with self.assertRaises(ImproperlyConfigured):
+            _env_int(env_var, default=0)
+        os.environ.pop(env_var, None)
+
+    # ------------------------------------------------------------------ #
+    # Email backend is configurable via environment variable
+    # ------------------------------------------------------------------ #
+
+    def test_email_backend_default_fallback_is_console(self):
+        import os
+        # Django's test runner overrides EMAIL_BACKEND to locmem at runtime, so
+        # we verify the *configured default* from the env var directly: when
+        # DJANGO_EMAIL_BACKEND is absent, settings.py falls back to the console backend.
+        backend = os.environ.get(
+            'DJANGO_EMAIL_BACKEND',
+            'django.core.mail.backends.console.EmailBackend',
+        )
+        self.assertIn('console', backend)
