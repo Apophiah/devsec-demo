@@ -10,6 +10,7 @@ from django.contrib.auth.views import (
 )
 from django.urls import reverse_lazy
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from datetime import timedelta
 
 from .models import LoginAttempt
@@ -68,6 +69,19 @@ def profile(request, username=None):
 class ApophiaLoginView(LoginView):
     template_name = 'apophia/login.html'
     redirect_authenticated_user = True
+
+    def get_success_url(self):
+        next_url = (
+            self.request.POST.get(self.redirect_field_name)
+            or self.request.GET.get(self.redirect_field_name, '')
+        )
+        if next_url and url_has_allowed_host_and_scheme(
+            url=next_url,
+            allowed_hosts=self.get_success_url_allowed_hosts(),
+            require_https=self.request.is_secure(),
+        ):
+            return next_url
+        return self.get_default_redirect_url()
 
     def get_client_ip(self):
         x_forwarded_for = self.request.META.get('HTTP_X_FORWARDED_FOR')

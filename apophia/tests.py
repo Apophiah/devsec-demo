@@ -341,6 +341,58 @@ class BruteForceTests(TestCase):
         self.assertTrue(response.context['user'].is_authenticated)
 
 
+class OpenRedirectTests(TestCase):
+    """Verifies that malicious `next` parameters are rejected on login."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(username='redirectuser', password='Password123!')
+        self.login_url = reverse('login')
+        self.dashboard_url = reverse('dashboard')
+        self.profile_url = reverse('profile')
+
+    def _login_with_next(self, next_param):
+        return self.client.post(
+            f"{self.login_url}?next={next_param}",
+            {'username': 'redirectuser', 'password': 'Password123!'},
+        )
+
+    def test_absolute_external_url_rejected(self):
+        """Attacker supplies https://attacker.com — must land on dashboard."""
+        response = self._login_with_next('https://attacker.com')
+        self.assertRedirects(response, self.dashboard_url)
+
+    def test_protocol_relative_url_rejected(self):
+        """Attacker supplies //attacker.com — must land on dashboard."""
+        response = self._login_with_next('//attacker.com')
+        self.assertRedirects(response, self.dashboard_url)
+
+    def test_protocol_relative_url_with_path_rejected(self):
+        """Attacker supplies //attacker.com/phish — must land on dashboard."""
+        response = self._login_with_next('//attacker.com/phish')
+        self.assertRedirects(response, self.dashboard_url)
+
+    def test_javascript_url_rejected(self):
+        """Attacker supplies javascript:alert(1) — must land on dashboard."""
+        response = self._login_with_next('javascript:alert(1)')
+        self.assertRedirects(response, self.dashboard_url)
+
+    def test_data_url_rejected(self):
+        """Attacker supplies data: URI — must land on dashboard."""
+        response = self._login_with_next('data:text/html,<script>alert(1)</script>')
+        self.assertRedirects(response, self.dashboard_url)
+
+    def test_safe_relative_next_is_honoured(self):
+        """Legitimate ?next=/profile/ must be respected after login."""
+        response = self._login_with_next(self.profile_url)
+        self.assertRedirects(response, self.profile_url)
+
+    def test_empty_next_falls_back_to_dashboard(self):
+        """No next parameter should fall back to the default redirect."""
+        response = self._login_with_next('')
+        self.assertRedirects(response, self.dashboard_url)
+
+
 class SecurityHeadersTests(TestCase):
     """Verifies that every response carries the required security headers."""
 
