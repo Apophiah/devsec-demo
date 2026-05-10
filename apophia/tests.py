@@ -396,6 +396,85 @@ class OpenRedirectTests(TestCase):
         self.assertRedirects(response, self.dashboard_url)
 
 
+class XSSProtectionTests(TestCase):
+    """Verifies that stored XSS payloads in user profile fields cannot execute."""
+
+    XSS_PAYLOAD = '<script>alert("xss")</script>'
+
+    def setUp(self):
+        self.client = Client()
+        self.attacker = User.objects.create_user(
+            username='attacker', email='attacker@example.com', password='Password123!'
+        )
+        self.staff = User.objects.create_user(
+            username='staffviewer', email='staff@example.com', password='Password123!',
+            is_staff=True,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Form-level: HTML tags are rejected before reaching the database
+    # ------------------------------------------------------------------ #
+
+    def test_xss_in_bio_is_rejected_by_form(self):
+        self.client.force_login(self.attacker)
+        original_bio = self.attacker.profile.bio
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'attacker@example.com',
+            'bio': self.XSS_PAYLOAD,
+            'location': '',
+        })
+        # Form error — page re-rendered, no redirect
+        self.assertEqual(response.status_code, 200)
+        self.attacker.profile.refresh_from_db()
+        self.assertEqual(self.attacker.profile.bio, original_bio)
+
+    def test_xss_in_location_is_rejected_by_form(self):
+        self.client.force_login(self.attacker)
+        original_location = self.attacker.profile.location
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'attacker@example.com',
+            'bio': '',
+            'location': self.XSS_PAYLOAD,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.attacker.profile.refresh_from_db()
+        self.assertEqual(self.attacker.profile.location, original_location)
+
+    # ------------------------------------------------------------------ #
+    # Template-level: even if payload reaches the DB it is escaped on render
+    # ------------------------------------------------------------------ #
+
+    def test_stored_xss_in_location_is_escaped_in_staff_directory(self):
+        # Write the payload directly to bypass form validation (simulates
+        # data inserted before this fix, or via the admin/shell).
+        self.attacker.profile.location = self.XSS_PAYLOAD
+        self.attacker.profile.save()
+
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('staff_directory'))
+        self.assertEqual(response.status_code, 200)
+        # Raw tag must not appear in the rendered HTML
+        self.assertNotContains(response, '<script>alert("xss")</script>')
+        # Escaped representation should appear instead
+        self.assertContains(response, '&lt;script&gt;alert')
+
+    # ------------------------------------------------------------------ #
+    # Removing |safe from help_text must not break password hint rendering
+    # ------------------------------------------------------------------ #
+
+    def test_password_validators_help_text_still_renders_as_html(self):
+        # Django's built-in password1 help_text is a SafeString produced by
+        # password_validators_help_text_html(). Removing |safe from the
+        # template does NOT cause double-escaping because Django's template
+        # engine already treats SafeStrings as trusted.
+        response = self.client.get(reverse('register'))
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        # The password validator list is rendered as an HTML list, not escaped text
+        self.assertIn('<ul>', content)
+        self.assertNotIn('&lt;ul&gt;', content)
+
+
 class AuditLoggingTests(TestCase):
     """Verifies that security-relevant events are logged and secrets are never logged."""
 
