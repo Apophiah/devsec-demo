@@ -119,6 +119,23 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = 'static/'
 
+# ------------------------------------------------------------------ #
+# Media files (user-uploaded content)
+# ------------------------------------------------------------------ #
+# Public uploads (avatars only).  In production, serve this directory
+# via a reverse-proxy (nginx/caddy) instead of Django.
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Private uploads (documents).  This directory is intentionally NOT
+# exposed under MEDIA_URL.  All access goes through document_download.
+PRIVATE_STORAGE_ROOT = BASE_DIR / 'private'
+
+# Global safeguard: reject any in-memory upload larger than 10 MB.
+# Per-field limits in uploads.py are stricter (2 MB / 5 MB).
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
+
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'dashboard'
 LOGOUT_REDIRECT_URL = 'login'

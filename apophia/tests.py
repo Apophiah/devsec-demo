@@ -1,10 +1,16 @@
-from django.test import TestCase, Client
+import io
+import shutil
+import tempfile
+from pathlib import Path
+
+from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
-from .models import Profile, LoginAttempt
+from .models import Profile, LoginAttempt, Document
 
 
 class CSRFProtectionTests(TestCase):
@@ -672,3 +678,273 @@ class SecurityHeadersTests(TestCase):
         csrf_cookie = response.cookies.get('csrftoken')
         self.assertIsNotNone(csrf_cookie)
         self.assertIn('HttpOnly', csrf_cookie.output())
+
+
+# ------------------------------------------------------------------ #
+# File upload security tests
+# ------------------------------------------------------------------ #
+
+def _make_png_bytes():
+    """Create a minimal valid PNG in memory using Pillow."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new('RGB', (10, 10), color=(200, 100, 50)).save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def _make_pdf_bytes():
+    return b'%PDF-1.4 minimal test document'
+
+
+def _make_txt_bytes():
+    return 'Hello, this is a UTF-8 text file.\n'.encode('utf-8')
+
+
+# Temporary directories created once for the entire class and cleaned up after.
+_TEMP_MEDIA = tempfile.mkdtemp()
+_TEMP_PRIVATE = tempfile.mkdtemp()
+
+
+@override_settings(
+    MEDIA_ROOT=_TEMP_MEDIA,
+    PRIVATE_STORAGE_ROOT=Path(_TEMP_PRIVATE),
+)
+class FileUploadSecurityTests(TestCase):
+    """
+    Verifies upload validation, file-type enforcement, size limits,
+    access control (IDOR prevention), and correct download headers.
+
+    override_settings redirects both MEDIA_ROOT (avatars) and
+    PRIVATE_STORAGE_ROOT (documents) to throwaway temp directories so
+    tests never touch the real media folders.
+    """
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        shutil.rmtree(_TEMP_MEDIA, ignore_errors=True)
+        shutil.rmtree(_TEMP_PRIVATE, ignore_errors=True)
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username='uploader', email='upload@example.com', password='Password123!'
+        )
+        self.other_user = User.objects.create_user(
+            username='other', email='other@example.com', password='Password123!'
+        )
+
+    # ------------------------------------------------------------------ #
+    # Avatar — valid upload
+    # ------------------------------------------------------------------ #
+
+    def test_valid_png_avatar_accepted(self):
+        upload = SimpleUploadedFile('avatar.png', _make_png_bytes(), content_type='image/png')
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'upload@example.com',
+            'bio': '', 'location': '',
+            'avatar': upload,
+        })
+        self.assertRedirects(response, reverse('profile'))
+        self.user.profile.refresh_from_db()
+        self.assertTrue(self.user.profile.avatar)
+
+    # ------------------------------------------------------------------ #
+    # Avatar — extension whitelist
+    # ------------------------------------------------------------------ #
+
+    def test_avatar_disallowed_extension_rejected(self):
+        upload = SimpleUploadedFile('malware.exe', b'MZ\x90\x00', content_type='application/octet-stream')
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'upload@example.com',
+            'bio': '', 'location': '',
+            'avatar': upload,
+        })
+        # Form error — stays on profile page (no redirect)
+        self.assertEqual(response.status_code, 200)
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.avatar)
+
+    # ------------------------------------------------------------------ #
+    # Avatar — content spoofing (wrong content under a .png extension)
+    # ------------------------------------------------------------------ #
+
+    def test_avatar_fake_content_rejected(self):
+        upload = SimpleUploadedFile(
+            'not_really.png', b'\x00\x01\x02 definitely not an image',
+            content_type='image/png',
+        )
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'upload@example.com',
+            'bio': '', 'location': '',
+            'avatar': upload,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.avatar)
+
+    # ------------------------------------------------------------------ #
+    # Avatar — size limit (> 2 MB)
+    # ------------------------------------------------------------------ #
+
+    def test_avatar_over_size_limit_rejected(self):
+        big_content = b'A' * (2 * 1024 * 1024 + 1)   # 2 MB + 1 byte
+        upload = SimpleUploadedFile('big.png', big_content, content_type='image/png')
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'upload@example.com',
+            'bio': '', 'location': '',
+            'avatar': upload,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.avatar)
+
+    # ------------------------------------------------------------------ #
+    # Avatar — stored filename is randomised (UUID), not the original name
+    # ------------------------------------------------------------------ #
+
+    def test_avatar_filename_is_randomised(self):
+        upload = SimpleUploadedFile('my_photo.png', _make_png_bytes(), content_type='image/png')
+        self.client.force_login(self.user)
+        self.client.post(reverse('profile'), {
+            'first_name': '', 'last_name': '', 'email': 'upload@example.com',
+            'bio': '', 'location': '',
+            'avatar': upload,
+        })
+        self.user.profile.refresh_from_db()
+        stored_name = self.user.profile.avatar.name
+        self.assertNotIn('my_photo', stored_name)
+        self.assertTrue(stored_name.startswith('avatars/'))
+
+    # ------------------------------------------------------------------ #
+    # Document — valid PDF upload
+    # ------------------------------------------------------------------ #
+
+    def test_valid_pdf_document_accepted(self):
+        upload = SimpleUploadedFile('report.pdf', _make_pdf_bytes(), content_type='application/pdf')
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertRedirects(response, reverse('profile'))
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 1)
+        doc = Document.objects.get(user=self.user)
+        self.assertEqual(doc.original_filename, 'report.pdf')
+
+    # ------------------------------------------------------------------ #
+    # Document — valid TXT upload
+    # ------------------------------------------------------------------ #
+
+    def test_valid_txt_document_accepted(self):
+        upload = SimpleUploadedFile('notes.txt', _make_txt_bytes(), content_type='text/plain')
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertRedirects(response, reverse('profile'))
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 1)
+
+    # ------------------------------------------------------------------ #
+    # Document — extension whitelist
+    # ------------------------------------------------------------------ #
+
+    def test_document_disallowed_extension_rejected(self):
+        upload = SimpleUploadedFile('script.sh', b'#!/bin/bash\nrm -rf /', content_type='text/plain')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 0)
+
+    def test_document_html_extension_rejected(self):
+        upload = SimpleUploadedFile('page.html', b'<script>alert(1)</script>', content_type='text/html')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 0)
+
+    # ------------------------------------------------------------------ #
+    # Document — content spoofing (PDF extension, wrong magic bytes)
+    # ------------------------------------------------------------------ #
+
+    def test_document_fake_pdf_rejected(self):
+        upload = SimpleUploadedFile('fake.pdf', b'Not a real PDF', content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 0)
+
+    # ------------------------------------------------------------------ #
+    # Document — size limit (> 5 MB)
+    # ------------------------------------------------------------------ #
+
+    def test_document_over_size_limit_rejected(self):
+        big_content = b'%PDF' + b'x' * (5 * 1024 * 1024)   # just over 5 MB
+        upload = SimpleUploadedFile('big.pdf', big_content, content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        self.assertEqual(Document.objects.filter(user=self.user).count(), 0)
+
+    # ------------------------------------------------------------------ #
+    # Document — stored filename is randomised
+    # ------------------------------------------------------------------ #
+
+    def test_document_filename_is_randomised(self):
+        upload = SimpleUploadedFile('secret_name.pdf', _make_pdf_bytes(), content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        doc = Document.objects.get(user=self.user)
+        self.assertNotIn('secret_name', doc.file.name)
+        self.assertEqual(doc.original_filename, 'secret_name.pdf')
+
+    # ------------------------------------------------------------------ #
+    # Document download — requires authentication
+    # ------------------------------------------------------------------ #
+
+    def test_document_download_requires_login(self):
+        response = self.client.get(reverse('document_download', kwargs={'pk': 9999}))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response.url)
+
+    # ------------------------------------------------------------------ #
+    # Document download — IDOR prevention (user A cannot fetch user B's file)
+    # ------------------------------------------------------------------ #
+
+    def test_document_idor_prevented(self):
+        # Upload a document as self.user
+        upload = SimpleUploadedFile('private.pdf', _make_pdf_bytes(), content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        doc = Document.objects.get(user=self.user)
+
+        # other_user tries to download it
+        self.client.force_login(self.other_user)
+        response = self.client.get(reverse('document_download', kwargs={'pk': doc.pk}))
+        self.assertEqual(response.status_code, 404)
+
+    # ------------------------------------------------------------------ #
+    # Document download — security headers on the response
+    # ------------------------------------------------------------------ #
+
+    def test_document_download_has_secure_headers(self):
+        upload = SimpleUploadedFile('report.pdf', _make_pdf_bytes(), content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        doc = Document.objects.get(user=self.user)
+
+        response = self.client.get(reverse('document_download', kwargs={'pk': doc.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/octet-stream')
+        self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+        self.assertIn('attachment', response.get('Content-Disposition', ''))
+
+    # ------------------------------------------------------------------ #
+    # Document delete — removes the physical file
+    # ------------------------------------------------------------------ #
+
+    def test_document_delete_removes_file(self):
+        upload = SimpleUploadedFile('to_delete.pdf', _make_pdf_bytes(), content_type='application/pdf')
+        self.client.force_login(self.user)
+        self.client.post(reverse('document_upload'), {'file': upload})
+        doc = Document.objects.get(user=self.user)
+        file_path = doc.file.path
+
+        self.client.post(reverse('document_delete', kwargs={'pk': doc.pk}))
+        self.assertFalse(Document.objects.filter(pk=doc.pk).exists())
+        self.assertFalse(Path(file_path).exists())

@@ -1,3 +1,5 @@
+import os
+
 from django.shortcuts import render, redirect, get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth import login, logout, authenticate
@@ -8,13 +10,14 @@ from django.contrib.auth.views import (
     LoginView, LogoutView, PasswordChangeView, PasswordChangeDoneView,
     PasswordResetView, PasswordResetDoneView, PasswordResetConfirmView, PasswordResetCompleteView
 )
+from django.http import FileResponse, Http404
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from datetime import timedelta
 
-from .models import LoginAttempt
-from .forms import ApophiaUserCreationForm, UserUpdateForm, ProfileUpdateForm
+from .models import LoginAttempt, Document
+from .forms import ApophiaUserCreationForm, UserUpdateForm, ProfileUpdateForm, DocumentUploadForm
 from . import audit
 
 def register(request):
@@ -61,10 +64,18 @@ def profile(request, username=None):
         u_form = UserUpdateForm(instance=target_user)
         p_form = ProfileUpdateForm(instance=target_user.profile)
 
+    documents = []
+    document_form = None
+    if target_user == request.user:
+        documents = Document.objects.filter(user=request.user)
+        document_form = DocumentUploadForm()
+
     context = {
         'u_form': u_form,
         'p_form': p_form,
-        'target_user': target_user
+        'target_user': target_user,
+        'documents': documents,
+        'document_form': document_form,
     }
     return render(request, 'apophia/profile.html', context)
 
@@ -181,3 +192,65 @@ class ApophiaPasswordResetConfirmView(PasswordResetConfirmView):
 
 class ApophiaPasswordResetCompleteView(PasswordResetCompleteView):
     template_name = 'apophia/password_reset_complete.html'
+
+
+# ------------------------------------------------------------------ #
+# Document upload / download / delete
+# ------------------------------------------------------------------ #
+
+@login_required
+def document_upload(request):
+    if request.method != 'POST':
+        return redirect('profile')
+
+    form = DocumentUploadForm(request.POST, request.FILES)
+    if form.is_valid():
+        upload = request.FILES['file']
+        doc = form.save(commit=False)
+        doc.user = request.user
+        # Sanitise the original filename: strip path components and null bytes,
+        # then cap at the field's max_length so the DB write never fails.
+        doc.original_filename = os.path.basename(
+            upload.name.replace('\x00', '')
+        )[:255]
+        doc.file_size = upload.size
+        doc.save()
+        messages.success(request, f'"{doc.original_filename}" uploaded successfully.')
+    else:
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+
+    return redirect('profile')
+
+
+@login_required
+def document_download(request, pk):
+    # The user= filter is the IDOR guard: a user can only download their own files.
+    doc = get_object_or_404(Document, pk=pk, user=request.user)
+    try:
+        file_handle = doc.file.open('rb')
+    except (FileNotFoundError, OSError):
+        raise Http404("The requested file could not be found.")
+
+    response = FileResponse(
+        file_handle,
+        as_attachment=True,
+        filename=doc.original_filename,
+    )
+    # Force download and prevent MIME sniffing even for unexpected content.
+    response['Content-Type'] = 'application/octet-stream'
+    response['X-Content-Type-Options'] = 'nosniff'
+    # Tight CSP on the download response so browsers won't execute anything.
+    response['Content-Security-Policy'] = "default-src 'none'"
+    return response
+
+
+@login_required
+def document_delete(request, pk):
+    if request.method == 'POST':
+        doc = get_object_or_404(Document, pk=pk, user=request.user)
+        name = doc.original_filename
+        doc.delete()  # post_delete signal removes the physical file
+        messages.success(request, f'"{name}" deleted.')
+    return redirect('profile')
