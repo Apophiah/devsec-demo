@@ -126,6 +126,33 @@ LOGOUT_REDIRECT_URL = 'login'
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 # ------------------------------------------------------------------ #
+# Audit logging
+# ------------------------------------------------------------------ #
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'audit': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'audit_console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'audit',
+        },
+    },
+    'loggers': {
+        'apophia.audit': {
+            'handlers': ['audit_console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# ------------------------------------------------------------------ #
 # Security headers (SecurityMiddleware enforces these)
 # ------------------------------------------------------------------ #
 SECURE_CONTENT_TYPE_NOSNIFF = True   # X-Content-Type-Options: nosniff

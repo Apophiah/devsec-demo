@@ -15,15 +15,17 @@ from datetime import timedelta
 
 from .models import LoginAttempt
 from .forms import ApophiaUserCreationForm, UserUpdateForm, ProfileUpdateForm
+from . import audit
 
 def register(request):
     if request.user.is_authenticated:
         return redirect('profile')
-    
+
     if request.method == 'POST':
         form = ApophiaUserCreationForm(request.POST)
         if form.is_valid():
             user = form.save()
+            audit.log_registration(request, user.username)
             messages.success(request, f'Account created for {user.username}! You can now log in.')
             return redirect('login')
     else:
@@ -92,9 +94,9 @@ class ApophiaLoginView(LoginView):
         return ip
 
     def post(self, request, *args, **kwargs):
-        username = request.POST.get('username')
+        username = request.POST.get('username', '')
         ip_address = self.get_client_ip()
-        
+
         # Check for lockout (5 failures in the last 15 minutes)
         fifteen_mins_ago = timezone.now() - timedelta(minutes=15)
         failures = LoginAttempt.objects.filter(
@@ -104,24 +106,42 @@ class ApophiaLoginView(LoginView):
         ).count()
 
         if failures >= 5:
+            audit.log_login_lockout(request, username)
             messages.error(request, 'Too many failed login attempts. Your account is temporarily locked. Please try again in 15 minutes.')
             return render(request, self.template_name, self.get_context_data())
 
         return super().post(request, *args, **kwargs)
 
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        audit.log_login_success(self.request, form.get_user().username)
+        return response
+
     def form_invalid(self, form):
-        # Log the failed attempt
-        username = self.request.POST.get('username')
+        username = self.request.POST.get('username', '')
         ip_address = self.get_client_ip()
         LoginAttempt.objects.create(username=username, ip_address=ip_address)
+        audit.log_login_failure(self.request, username)
         return super().form_invalid(form)
 
 class ApophiaLogoutView(LogoutView):
     template_name = 'apophia/logout.html'
 
+    def post(self, request, *args, **kwargs):
+        username = request.user.username if request.user.is_authenticated else ''
+        response = super().post(request, *args, **kwargs)
+        if username:
+            audit.log_logout(request, username)
+        return response
+
 class ApophiaPasswordChangeView(PasswordChangeView):
     template_name = 'apophia/password_change.html'
     success_url = reverse_lazy('password_change_done')
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        audit.log_password_change(self.request, self.request.user.username)
+        return response
 
 class ApophiaPasswordChangeDoneView(PasswordChangeDoneView):
     template_name = 'apophia/password_change_done.html'
@@ -140,12 +160,24 @@ class ApophiaPasswordResetView(PasswordResetView):
     email_template_name = 'apophia/password_reset_email.html'
     success_url = reverse_lazy('password_reset_done')
 
+    def form_valid(self, form):
+        email = form.cleaned_data.get('email', '')
+        response = super().form_valid(form)
+        audit.log_password_reset_requested(self.request, email)
+        return response
+
 class ApophiaPasswordResetDoneView(PasswordResetDoneView):
     template_name = 'apophia/password_reset_done.html'
 
 class ApophiaPasswordResetConfirmView(PasswordResetConfirmView):
     template_name = 'apophia/password_reset_confirm.html'
     success_url = reverse_lazy('password_reset_complete')
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        if self.user:
+            audit.log_password_reset_complete(self.request, self.user.username)
+        return response
 
 class ApophiaPasswordResetCompleteView(PasswordResetCompleteView):
     template_name = 'apophia/password_reset_complete.html'

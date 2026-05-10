@@ -1,7 +1,10 @@
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
-from .models import Profile
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
+from .models import Profile, LoginAttempt
 
 
 class CSRFProtectionTests(TestCase):
@@ -391,6 +394,141 @@ class OpenRedirectTests(TestCase):
         """No next parameter should fall back to the default redirect."""
         response = self._login_with_next('')
         self.assertRedirects(response, self.dashboard_url)
+
+
+class AuditLoggingTests(TestCase):
+    """Verifies that security-relevant events are logged and secrets are never logged."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username='audituser', email='audit@example.com', password='Password123!'
+        )
+
+    # ------------------------------------------------------------------ #
+    # Registration
+    # ------------------------------------------------------------------ #
+
+    def test_registration_is_logged(self):
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('register'), {
+                'username': 'newaudituser',
+                'email': 'newaudit@example.com',
+                'password1': 'Password123!',
+                'password2': 'Password123!',
+            })
+        self.assertTrue(
+            any('event=registration' in msg and 'newaudituser' in msg for msg in cm.output)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Login
+    # ------------------------------------------------------------------ #
+
+    def test_login_success_is_logged(self):
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('login'), {
+                'username': 'audituser',
+                'password': 'Password123!',
+            })
+        self.assertTrue(
+            any('event=login' in msg and 'status=success' in msg and 'audituser' in msg
+                for msg in cm.output)
+        )
+
+    def test_login_failure_is_logged(self):
+        with self.assertLogs('apophia.audit', level='WARNING') as cm:
+            self.client.post(reverse('login'), {
+                'username': 'audituser',
+                'password': 'wrongpassword',
+            })
+        self.assertTrue(
+            any('event=login' in msg and 'status=failure' in msg and 'audituser' in msg
+                for msg in cm.output)
+        )
+
+    def test_login_lockout_is_logged(self):
+        # Seed 5 recent failures to trigger the lockout path immediately
+        for _ in range(5):
+            LoginAttempt.objects.create(username='audituser', ip_address='127.0.0.1')
+        with self.assertLogs('apophia.audit', level='WARNING') as cm:
+            self.client.post(reverse('login'), {
+                'username': 'audituser',
+                'password': 'Password123!',
+            })
+        self.assertTrue(
+            any('event=login' in msg and 'status=locked_out' in msg for msg in cm.output)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Logout
+    # ------------------------------------------------------------------ #
+
+    def test_logout_is_logged(self):
+        self.client.force_login(self.user)
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('logout'))
+        self.assertTrue(
+            any('event=logout' in msg and 'audituser' in msg for msg in cm.output)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Password change
+    # ------------------------------------------------------------------ #
+
+    def test_password_change_is_logged(self):
+        self.client.force_login(self.user)
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('password_change'), {
+                'old_password': 'Password123!',
+                'new_password1': 'NewPass456!',
+                'new_password2': 'NewPass456!',
+            })
+        self.assertTrue(
+            any('event=password_change' in msg and 'status=success' in msg for msg in cm.output)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Password reset
+    # ------------------------------------------------------------------ #
+
+    def test_password_reset_requested_is_logged(self):
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('password_reset'), {'email': 'audit@example.com'})
+        self.assertTrue(
+            any('event=password_reset_requested' in msg for msg in cm.output)
+        )
+
+    def test_password_reset_complete_is_logged(self):
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        token = default_token_generator.make_token(self.user)
+        confirm_url = reverse('password_reset_confirm', kwargs={'uidb64': uid, 'token': token})
+        # GET establishes the session and redirects to the set-password URL
+        self.client.get(confirm_url)
+        set_password_url = reverse(
+            'password_reset_confirm', kwargs={'uidb64': uid, 'token': 'set-password'}
+        )
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(set_password_url, {
+                'new_password1': 'NewPassword456!',
+                'new_password2': 'NewPassword456!',
+            })
+        self.assertTrue(
+            any('event=password_reset_complete' in msg for msg in cm.output)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Sensitive data must never appear in logs
+    # ------------------------------------------------------------------ #
+
+    def test_passwords_not_in_logs(self):
+        with self.assertLogs('apophia.audit', level='INFO') as cm:
+            self.client.post(reverse('login'), {
+                'username': 'audituser',
+                'password': 'Password123!',
+            })
+        all_logs = '\n'.join(cm.output)
+        self.assertNotIn('Password123!', all_logs)
 
 
 class SecurityHeadersTests(TestCase):
